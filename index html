@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <title>星際怪獸生存戰</title>
+    <style>
+        body { margin: 0; display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #0b0c10; font-family: '微軟正黑體', sans-serif; color: white; overflow: hidden; }
+        
+        #game-container { 
+            position: relative; 
+            width: 600px; 
+            height: 450px; 
+        }
+        
+        /* *** 重點修改：將背景替換為外太空星系圖 *** */
+        #game-container::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-image: url('https://images.unsplash.com/photo-1462331940025-496dfbfc7564?q=80&w=800&auto=format&fit=crop'); /* 外太空星空圖 */
+            background-size: cover;
+            background-position: center;
+            opacity: 0.5; /* 保持 50% 透明度 */
+            z-index: 0;   
+            border: 5px solid transparent; 
+        }
+        
+        .ui { 
+            position: absolute; 
+            top: 20px; 
+            width: 100%; 
+            display: flex; 
+            justify-content: space-around; 
+            font-size: 24px; 
+            font-weight: bold; 
+            pointer-events: none; 
+            z-index: 20; 
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.9); 
+        }
+        
+        canvas { 
+            position: absolute;
+            top: 0;
+            left: 0;
+            border: 5px solid #1f2833; /* 配合太空主題稍微調暗邊框 */
+            background-color: transparent; 
+            box-shadow: 0 0 20px rgba(0,0,0,0.8); 
+            cursor: none; 
+            transition: transform 0.1s;
+            z-index: 1; 
+        }
+
+        #livesDisplay { color: #e74c3c; transition: all 0.3s; }
+        .low-life { animation: blink 0.5s infinite; }
+        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
+        
+        #overlay { 
+            position: absolute; 
+            top: 0; 
+            left: 0; 
+            width: 100%; 
+            height: 100%; 
+            background: rgba(0,0,0,0.85); 
+            display: flex; 
+            flex-direction: column; 
+            justify-content: center; 
+            align-items: center; 
+            cursor: default; 
+            z-index: 30; 
+        }
+        button { padding: 10px 25px; font-size: 20px; cursor: pointer; background: #3498db; color: white; border: none; border-radius: 5px; margin-top: 15px; transition: 0.2s; }
+        button:hover { background: #2980b9; transform: scale(1.05); }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <div class="ui">
+        <div id="scoreDisplay">分數: 0</div>
+        <div id="livesDisplay">❤️❤️❤️</div>
+    </div>
+    
+    <canvas id="gameCanvas"></canvas>
+    
+    <div id="overlay">
+        <h1 id="msgTitle">星際怪獸防禦戰</h1>
+        <p id="msgDesc">移動科幻防護罩，彈開來襲的星際小怪獸！每成功防禦一次，牠們就會變得更快！</p>
+        <button onclick="startGame()">啟動防禦系統</button>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    const overlay = document.getElementById("overlay");
+    const livesUI = document.getElementById("livesDisplay");
+    canvas.width = 600;
+    canvas.height = 450;
+
+    let score = 0, lives = 3;
+    let gameState = "START";
+    
+    let ballRadius = 15; 
+    let paddleHeight = 14, paddleX;
+    let basePaddleWidth = 100, paddleWidth = 100;
+    
+    let paddleTimer = 0;
+    let powerupSpawnTimer = 0;
+    let shakeTime = 0;
+    let flickerTime = 0;
+    let hurtCooldown = 0; 
+
+    let balls = [], powerups = [];
+
+    function initMainBall() {
+        balls = [{
+            x: canvas.width / 2, 
+            y: 150,
+            dx: 3 * (Math.random() > 0.5 ? 1 : -1),
+            dy: 3, 
+            active: true,
+            isExtra: false,
+            timeLeft: 0
+        }];
+    }
+
+    function startGame() {
+        if(gameState === "GAME_OVER" || gameState === "START") {
+            score = 0; lives = 3;
+        }
+        overlay.style.display = "none";
+        gameState = "PLAYING";
+        paddleWidth = basePaddleWidth;
+        flickerTime = 0;
+        hurtCooldown = 0;
+        powerupSpawnTimer = 0;
+        powerups = [];
+        ctx.clearRect(0, 0, canvas.width, canvas.height); 
+        initMainBall();
+        updateUI();
+        requestAnimationFrame(draw);
+    }
+
+    function updateUI() {
+        document.getElementById("scoreDisplay").innerText = "分數: " + score;
+        livesUI.innerText = "❤️".repeat(lives > 0 ? lives : 0);
+        
+        if(lives === 1) livesUI.classList.add("low-life");
+        else livesUI.classList.remove("low-life");
+    }
+
+    document.addEventListener("mousemove", (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const relativeX = e.clientX - rect.left;
+        if(relativeX > 0 && relativeX < canvas.width) {
+            paddleX = relativeX - paddleWidth / 2;
+        }
+    });
+
+    function spawnRandomPowerup() {
+        const types = ["wide", "life", "extra_ball"];
+        const type = types[Math.floor(Math.random() * types.length)];
+        const x = Math.random() * (canvas.width - 40) + 20;
+        powerups.push({ x, y: 0, type, dy: 2 });
+    }
+
+    function applyPowerup(type) {
+        if(type === "wide") { 
+            paddleWidth = 170; 
+            paddleTimer = 600; 
+        }
+        else if(type === "life") { 
+            lives++; 
+            updateUI(); 
+        }
+        else if(type === "extra_ball") { 
+            balls.push({ 
+                x: paddleX + paddleWidth/2, 
+                y: canvas.height - 40, 
+                dx: (Math.random() > 0.5 ? 4 : -4), 
+                dy: -4, 
+                active: true,
+                isExtra: true,
+                timeLeft: 900 
+            }); 
+        }
+    }
+
+    // 繪製怪獸
+    function drawMonster(x, y, radius, isExtra) {
+        ctx.save();
+        
+        // 1. 繪製小犄角
+        ctx.fillStyle = isExtra ? "#0096ff" : "#d35400";
+        ctx.beginPath();
+        ctx.moveTo(x - radius + 2, y - radius + 4);
+        ctx.lineTo(x - radius - 2, y - radius - 5); 
+        ctx.lineTo(x - radius + 9, y - radius + 2);
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.moveTo(x + radius - 2, y - radius + 4);
+        ctx.lineTo(x + radius + 2, y - radius - 5); 
+        ctx.lineTo(x + radius - 9, y - radius + 2);
+        ctx.fill();
+
+        // 2. 怪獸身體主體
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fillStyle = isExtra ? "#00f0ff" : "#f1c40f";
+        ctx.fill();
+        ctx.closePath();
+
+        // 3. 憤怒的白色大眼睛
+        let eyeOffset = radius * 0.36;
+        let eyeRadius = radius * 0.27;
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(x - eyeOffset, y - 2, eyeRadius, 0, Math.PI * 2); 
+        ctx.arc(x + eyeOffset, y - 2, eyeRadius, 0, Math.PI * 2); 
+        ctx.fill();
+
+        // 4. 邪惡的紅色瞳孔
+        ctx.fillStyle = "#e74c3c";
+        ctx.beginPath();
+        ctx.arc(x - eyeOffset, y - 2, radius * 0.1, 0, Math.PI * 2);
+        ctx.arc(x + eyeOffset, y - 2, radius * 0.1, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 5. 憤怒的倒八字眉毛
+        ctx.strokeStyle = "#000000";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x - eyeOffset - 4, y - 7);
+        ctx.lineTo(x - eyeOffset + 3, y - 4); 
+        ctx.moveTo(x + eyeOffset + 4, y - 7);
+        ctx.lineTo(x + eyeOffset - 3, y - 4); 
+        ctx.stroke();
+
+        ctx.restore();
+    }
+
+    function draw() {
+        if(gameState !== "PLAYING") return;
+        
+        if (shakeTime > 0) {
+            let dx = (Math.random() - 0.5) * 10;
+            let dy = (Math.random() - 0.5) * 10;
+            canvas.style.transform = `translate(${dx}px, ${dy}px)`;
+            shakeTime--;
+        } else {
+            canvas.style.transform = `translate(0, 0)`;
+        }
+
+        if (hurtCooldown > 0) hurtCooldown--;
+
+        // 流星動態殘影尾跡
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.fillStyle = "rgba(0, 0, 0, 0.25)"; 
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.globalCompositeOperation = 'source-over'; 
+
+        powerupSpawnTimer++;
+        if(powerupSpawnTimer >= 500) { 
+            spawnRandomPowerup();
+            powerupSpawnTimer = 0;
+        }
+
+        powerups.forEach((p, index) => {
+            p.y += p.dy;
+            ctx.font = "24px Arial";
+            ctx.fillText(p.type === "wide" ? "⭐" : p.type === "life" ? "❤️" : "🔮", p.x, p.y);
+
+            if(p.y > canvas.height - 25 && p.x > paddleX && p.x < paddleX + paddleWidth) {
+                applyPowerup(p.type);
+                powerups.splice(index, 1);
+            } else if(p.y > canvas.height) {
+                powerups.splice(index, 1);
+            }
+        });
+
+        // 科幻防護罩
+        ctx.save();
+        if (flickerTime > 0) {
+            flickerTime--;
+            if (Math.floor(flickerTime / 5) % 2 === 0) ctx.globalAlpha = 0.3;
+        }
+        
+        let shieldColor = (paddleTimer > 0) ? "#e67e22" : "#3498db";
+        ctx.shadowBlur = 15; 
+        ctx.shadowColor = shieldColor;
+        
+        ctx.fillStyle = (paddleTimer > 0) ? "rgba(230, 126, 34, 0.35)" : "rgba(52, 152, 219, 0.35)";
+        ctx.beginPath();
+        if(ctx.roundRect) {
+            ctx.roundRect(paddleX, canvas.height-22, paddleWidth, paddleHeight, 6);
+        } else {
+            ctx.rect(paddleX, canvas.height-22, paddleWidth, paddleHeight);
+        }
+        ctx.fill();
+        
+        ctx.strokeStyle = shieldColor;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(paddleX + 8, canvas.height - 15);
+        ctx.lineTo(paddleX + paddleWidth - 8, canvas.height - 15);
+        ctx.stroke();
+        
+        ctx.restore();
+
+        // 移動與碰撞檢測
+        balls.forEach((b, index) => {
+            if(!b.active) return;
+
+            if(b.isExtra) {
+                b.timeLeft--;
+                if(b.timeLeft <= 0) {
+                    b.active = false;
+                    return;
+                }
+            }
+
+            drawMonster(b.x, b.y, ballRadius, b.isExtra);
+
+            // 邊界反彈
+            if(b.x + b.dx > canvas.width-ballRadius || b.x + b.dx < ballRadius) b.dx = -b.dx;
+            if(b.y + b.dy < ballRadius) b.dy = -b.dy;
+
+            // 防護罩防禦成功判定
+            if(b.dy > 0 && b.y + ballRadius >= canvas.height - 22 && b.y - ballRadius <= canvas.height - 8) {
+                if(b.x >= paddleX && b.x <= paddleX + paddleWidth) {
+                    b.dy = -b.dy;
+                    b.y = canvas.height - 22 - ballRadius; 
+
+                    let currentSpeed = Math.sqrt(b.dx*b.dx + b.dy*b.dy);
+                    let newSpeed = currentSpeed + 0.5; 
+                    
+                    let hitPos = (b.x - (paddleX + paddleWidth / 2)) / (paddleWidth / 2); 
+                    b.dx = newSpeed * Math.sin(hitPos * 1.0);
+                    b.dy = -newSpeed * Math.cos(hitPos * 1.0);
+
+                    score++; 
+                    updateUI();
+                    return;
+                }
+            }
+
+            // 地面漏接判定
+            if(b.y + ballRadius >= canvas.height) {
+                b.dy = -b.dy;
+                b.y = canvas.height - ballRadius; 
+
+                if (hurtCooldown <= 0) {
+                    lives--;
+                    shakeTime = 10;   
+                    flickerTime = 60; 
+                    hurtCooldown = 30; 
+                    updateUI();
+
+                    if(lives <= 0) {
+                        gameState = "GAME_OVER";
+                        document.getElementById("msgTitle").innerText = "防線崩潰！";
+                        document.getElementById("msgDesc").innerText = "星系已被怪獸佔領！最終防禦分數: " + score;
+                        overlay.style.display = "flex";
+                        return;
+                    }
+                }
+            }
+
+            b.x += b.dx; 
+            b.y += b.dy;
+        });
+
+        balls = balls.filter(b => b.active);
+
+        if(balls.length === 0 && gameState === "PLAYING") {
+            initMainBall();
+        }
+
+        requestAnimationFrame(draw);
+    }
+
+    paddleX = (canvas.width - paddleWidth) / 2;
+    updateUI();
+</script>
+</body>
+</html>
